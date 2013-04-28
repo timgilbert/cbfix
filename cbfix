@@ -4,8 +4,18 @@ import argparse, zipfile, os
 
 ROOT = '/tmp/x'
 
+class Comic:
+    def __init__(self, filename):
+        self.filename = filename
+
+def looks_comic(filename):
+    return os.path.splitext(filename)[1].lower() in ['cbr', 'cbz']
+
 def main():
+    comix = []
     for root, dirs, files in os.walk(ROOT):
-        print files
+        comix += [Comix(f) for f in files if looks_comic(f)]
+
+    print comix
 
 if __name__ == '__main__': main()
