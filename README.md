@@ -12,4 +12,4 @@ All this script does is to open all cbr/cbz files underneath a given
 directory, check for filenames in the format "0405.jpg", and rename them
 to, for instance, "Comic Name v3 02-04-05.jpg".
 
-* Or maybe it's OS/X is doing this, I don't know.
+(*) Or maybe it's OS/X doing this, I don't know.
