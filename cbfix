@@ -1,21 +1,76 @@
 #! /usr/bin/env python
 
-import argparse, zipfile, os
+import logging, rarfile, re, os
 
 ROOT = '/tmp/x'
+COMIC_CBR_EXT = frozenset(['.cbr', '.rar'])
+COMIC_CBZ_EXT = frozenset(['.cbz', '.zip'])
+COMIC_EXT = COMIC_CBR_EXT | COMIC_CBZ_EXT
 
-class Comic:
+BAD_FN = re.compile(r'^(.*)(\d{2})(\d{2})\.([A-Za-z0-9]+)$')
+
+def fix_filename(filename):
+    """Given a possibly bad filename, return a fixed version of it, or None
+    if the filename is already correct"""
+    res = BAD_FN.match(filename)
+    if res is None: return None
+    return res.expand(r'\1\2-\3.\4')
+
+class Comic(object):
     def __init__(self, filename):
         self.filename = filename
+        self.basename = os.path.basename(filename)
+        self.bad_names = [fx for fx
+                          in (fix_filename(f) for f in self.list_all_files())
+                          if fx]
+
+    def list_all_files(self):
+        raise NotImplementedError('Subclasses must define list_all_files')
+
+    def __repr__(self):
+        return '<{.basename}>'.format(self)
+
+    @staticmethod
+    def makeComic(root, filename):
+        path = os.path.join(root, filename)
+        if ext(filename) in COMIC_CBR_EXT:
+            return CbrComic(path)
+        elif ext(filename) in COMIC_CBZ_EXT:
+            return CbzComic(path)
+        else:
+            raise 'Unknown comic extension {}'.format(ext)
+
+class CbrComic(Comic):
+    def __init__(self, filename):
+        super(CbrComic, self).__init__(filename)
+
+    def list_all_files(self):
+        with rarfile.RarFile(self.filename) as rf:
+            return rf.namelist()
+
+class CbzComic(Comic):
+    def __init__(self, filename):
+        super(CbrComic, self).__init__(filename)
+
+def ext(filename):
+    return os.path.splitext(filename)[1].lower()
 
 def looks_comic(filename):
-    return os.path.splitext(filename)[1].lower() in ['cbr', 'cbz']
+    return ext(filename) in COMIC_EXT
 
-def main():
+def scan_comics(root):
     comix = []
     for root, dirs, files in os.walk(ROOT):
-        comix += [Comix(f) for f in files if looks_comic(f)]
+        comix += [Comic.makeComic(root, f) for f in files if looks_comic(f)]
+    return comix
 
-    print comix
+def main():
+    # TODO: argparse, etc
+    logging.basicConfig(level=logging.DEBUG, format='%(message)s')
+    for comic in scan_comics(ROOT):
+        if comic.bad_names:
+            logging.info('Fixing filenames in {}'.format(comic))
+        else:
+            logging.debug('Skipping {}'.format(comic))
 
 if __name__ == '__main__': main()
