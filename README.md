@@ -19,8 +19,10 @@ Dependencies
 This project uses [rarfile](https://github.com/markokr/rarfile/) to
 parse CBR files. It needs a `rar` executable somewhere on the PATH
 in order to re-create CBR files (but it should eventually be able to
-convert from CBR to CBZ files). If you need a rar, try the [official
-version from rarlabs](http://www.rarlab.com/download.htm).
+convert from CBR to CBZ files). If you need a rar executable, try the
+[official version from rarlabs](http://www.rarlab.com/download.htm).
+
+You'll need to `pip install rarfile` to get this working.
 
 Portability
 -----------

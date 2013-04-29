@@ -64,10 +64,16 @@ class Comic(object):
         return '<"{0.basename}"{1}>'.format(self, sz)
 
     def list_compressed_files(self):
-        raise NotImplementedError('Subclasses must define list_all_files()')
+        with self.openArchive(self.filename) as compressed_file:
+            return compressed_file.namelist()
 
-    def list_compressed_files(self):
-        raise NotImplementedError('Subclasses must define list_all_files()')
+    def extract_to(self, directory):
+        with self.openArchive(self.filename) as compressed_file:
+            compressed_file.extractall(path=directory)
+            logging.debug('Extracted %s to %s', self.filename, directory)
+
+    def openArchive(self, filename):
+        raise NotImplementedError('Subclasses must define openArchive()')
 
     def extension(self):
         raise NotImplementedError('Subclasses must define extension()')
@@ -89,36 +95,35 @@ class RarComic(Comic):
     def __init__(self, filename):
         super(RarComic, self).__init__(filename)
 
-    def extension(): return '.cbr'
+    def extension(self): return '.cbr'
 
-    def list_compressed_files(self):
-        with rarfile.RarFile(self.filename) as rf:
-            return rf.namelist()
+    def openArchive(self, filename): return rarfile.RarFile(filename)
 
 class ZipComic(Comic):
     def __init__(self, filename):
         super(ZipComic, self).__init__(filename)
 
-    def extension(): return '.cbz'
+    def extension(self): return '.cbz'
 
-    def list_compressed_files(self):
-        with zipfile.ZipFile(self.filename) as zf:
-            return zf.namelist()
+    def openArchive(self, filename): return zipfile.ZipFile(filename)
 
 class Fixer(object):
-    def __init__(self):
+    def __init__(self, detect_only=False):
         self.root = None
         self.queue = []
         self.total_comics = 0
         self.total_renames = 0
+        self.detect_only = detect_only
 
     def cleanup(self):
         if self.root is None: return
         logging.debug('Removing %s', self.root)
-        shutil.rmtree(self.root)
+        #shutil.rmtree(self.root)
 
-    def _mktmp(self):
-        self.root = tempfile.mkdtemp(prefix='cbfix-')
+    def getTemp(self):
+        if self.root is None:
+            self.root = tempfile.mkdtemp(prefix='cbfix-')
+        return self.root
 
     def include(self, comic):
         """Include the given comic in the eventual fixing pass"""
@@ -131,13 +136,25 @@ class Fixer(object):
 
     def fix_all(self):
         """Go through the list of previously included files and fix them"""
-        logging.info('About to fix %d bad image names in %d comic files...',
-                     self.total_renames, self.total_comics)
+        if not self.queue:
+            logging.info('No incorrect files found (scanned %d comic files).',
+                         self.total_comics)
+            return
+
+        msg = '{} {} incorrect filenames in {} files.'.format(
+            ('Detected' if self.detect_only else 'About to fix'),
+            self.total_renames, self.total_comics)
+        logging.info(msg)
         for comic in self.queue:
-            logging.info('Fixing %d files in %s', len(comic.bad_names), comic)
-            for old, new in comic.bad_names.iteritems():
-                pass
-                logging.debug('Renaming %s to %s', old, new)
+            logging.info('Found %d incorrect files in %s',
+                         len(comic.bad_names), comic)
+            if not self.detect_only:
+                self.fix_comic(comic)
+
+    def fix_comic(self, comic):
+        dirname = comic.extract_to(self.getTemp())
+        for old, new in comic.bad_names.iteritems():
+            logging.debug('Renaming %s to %s', old, new)
 
 def ext(filename):
     return os.path.splitext(filename)[1].lower()
@@ -163,7 +180,7 @@ def main():
     level = logging.DEBUG if opts.verbose else logging.INFO
     logging.basicConfig(level=level, format='%(message)s')
 
-    fixer = Fixer()
+    fixer = Fixer(detect_only=opts.detect)
     try:
         for comic in scan_comics(opts.root):
             fixer.include(comic)
