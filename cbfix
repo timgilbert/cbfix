@@ -1,15 +1,15 @@
 #! /usr/bin/env python
 
-import logging, rarfile, zipfile, re, os, sys
+import logging, rarfile, zipfile, re, os, sys, tempfile, shutil, argparse
 
-ROOT = '/tmp/x'
+#ROOT = '/tmp/x'
 #ROOT = '/Users/mysterio/Documents/Comics/Marvel/Daredevil Vol 2'
 
 COMIC_CBR_EXT = frozenset(['.cbr', '.rar'])
 COMIC_CBZ_EXT = frozenset(['.cbz', '.zip'])
 COMIC_EXT = COMIC_CBR_EXT | COMIC_CBZ_EXT
 
-FINAL_NUMBER = re.compile(r'\D(\d+)\.[A-Za-z0-9]+$')
+FINAL_NUMBER = re.compile(r'[^\d](\d+)\.[A-Za-z0-9]+$')
 FOUR_NUM_END = re.compile(r'^(.*)(\d\d)(\d\d)\.([A-Za-z0-9]+)$')
 
 def fixed_filename(filename):
@@ -31,28 +31,26 @@ class Comic(object):
         max_num = 0
         min_num = sys.maxint
         bad_names = {}
-        for fn in self.list_all_files():
-            last_num = FINAL_NUMBER.search(fn)
+        for comp_file in self.list_compressed_files():
+            last_num = FINAL_NUMBER.search(comp_file)
             if last_num is None:
-                #logging.debug('Skipping %s', fn)
+                logging.debug('Scanner: skipping %s', comp_file)
                 continue
             num_len = len(last_num.group(1))
             max_num = max(max_num, num_len)
             min_num = min(min_num, num_len)
-            four_match = FOUR_NUM_END.match(fn)
+            four_match = FOUR_NUM_END.match(comp_file)
             if four_match:
-                bad_names[fn] = four_match.expand(r'\1\2-\3.\4')
+                bad_names[comp_file] = four_match.expand(r'\1\2-\3.\4')
         if max_num != 4 or min_num != 2:
-            logging.debug('Skipping fix for %s (max %d, min %d)', self, max_num, min_num)
+            logging.debug('Skipping fix for %s because of odd numbering (max %d, min %d)',
+                          self, max_num, min_num)
             return
         #logging.debug('hmm, %s: max %d, min %d, n %d', self, max_num, min_num, len(bad_names))
         self.bad_names = bad_names
         self.has_bad_names = True
 
-    def list_all_files(self):
-        raise NotImplementedError('Subclasses must define list_all_files')
-
-    def fix_filenames(self):
+    def fix_filenames(self, fixer):
         if not self.bad_names:
             logging.debug('No incorrect files found in %s', self)
             return
@@ -65,31 +63,81 @@ class Comic(object):
         sz = ' ({})'.format(len(self.bad_names)) if self.bad_names else ''
         return '<"{0.basename}"{1}>'.format(self, sz)
 
+    def list_compressed_files(self):
+        raise NotImplementedError('Subclasses must define list_all_files()')
+
+    def list_compressed_files(self):
+        raise NotImplementedError('Subclasses must define list_all_files()')
+
+    def extension(self):
+        raise NotImplementedError('Subclasses must define extension()')
+
     @staticmethod
     def makeComic(root, filename):
+        """Factory method returning an appropriate Comic subclass based on the file
+        type of the passed-in filename or None"""
         path = os.path.join(root, filename)
-        if ext(filename) in COMIC_CBR_EXT:
-            return CbrComic(path)
-        elif ext(filename) in COMIC_CBZ_EXT:
-            return CbzComic(path)
+        if rarfile.is_rarfile(path):
+            return RarComic(path)
+        elif zipfile.is_zipfile(path):
+            return ZipComic(path)
         else:
-            raise 'Unknown comic extension {}'.format(ext)
+            logging.error('File "%s" is neither a rar nor a zip file, skipping it', path)
+            return None
 
-class CbrComic(Comic):
+class RarComic(Comic):
     def __init__(self, filename):
-        super(CbrComic, self).__init__(filename)
+        super(RarComic, self).__init__(filename)
 
-    def list_all_files(self):
+    def extension(): return '.cbr'
+
+    def list_compressed_files(self):
         with rarfile.RarFile(self.filename) as rf:
             return rf.namelist()
 
-class CbzComic(Comic):
+class ZipComic(Comic):
     def __init__(self, filename):
-        super(CbzComic, self).__init__(filename)
+        super(ZipComic, self).__init__(filename)
 
-    def list_all_files(self):
+    def extension(): return '.cbz'
+
+    def list_compressed_files(self):
         with zipfile.ZipFile(self.filename) as zf:
             return zf.namelist()
+
+class Fixer(object):
+    def __init__(self):
+        self.root = None
+        self.queue = []
+        self.total_comics = 0
+        self.total_renames = 0
+
+    def cleanup(self):
+        if self.root is None: return
+        logging.debug('Removing %s', self.root)
+        shutil.rmtree(self.root)
+
+    def _mktmp(self):
+        self.root = tempfile.mkdtemp(prefix='cbfix-')
+
+    def include(self, comic):
+        """Include the given comic in the eventual fixing pass"""
+        if not comic.bad_names:
+            logging.debug('No incorrect files found in %s', comic)
+        else:
+            self.queue.append(comic)
+            self.total_comics += 1
+            self.total_renames += len(comic.bad_names)
+
+    def fix_all(self):
+        """Go through the list of previously included files and fix them"""
+        logging.info('About to fix %d bad image names in %d comic files...',
+                     self.total_renames, self.total_comics)
+        for comic in self.queue:
+            logging.info('Fixing %d files in %s', len(comic.bad_names), comic)
+            for old, new in comic.bad_names.iteritems():
+                pass
+                logging.debug('Renaming %s to %s', old, new)
 
 def ext(filename):
     return os.path.splitext(filename)[1].lower()
@@ -99,14 +147,28 @@ def looks_comicy(filename):
 
 def scan_comics(root):
     comix = []
-    for root, dirs, files in os.walk(ROOT):
+    for root, dirs, files in os.walk(root):
         comix += [Comic.makeComic(root, f) for f in files if looks_comicy(f)]
-    return comix
+    return [c for c in comix if c is not None]
 
 def main():
-    # TODO: argparse, etc
-    logging.basicConfig(level=logging.INFO, format='%(message)s')
-    for comic in scan_comics(ROOT):
-        comic.fix_filenames()
+    parser = argparse.ArgumentParser(description='Fix cbr/cbz page numbering')
+    parser.add_argument('root', help='Root directory to scan')
+    parser.add_argument('-v', '--verbose', action='store_true',
+                        help='Produce verbose output')
+    parser.add_argument('-d', '--detect', action='store_true',
+                        help='Detect bad filenames, but do not fix anything')
+    opts = parser.parse_args()
+
+    level = logging.DEBUG if opts.verbose else logging.INFO
+    logging.basicConfig(level=level, format='%(message)s')
+
+    fixer = Fixer()
+    try:
+        for comic in scan_comics(opts.root):
+            fixer.include(comic)
+        fixer.fix_all()
+    finally:
+        fixer.cleanup()
 
 if __name__ == '__main__': main()

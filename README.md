@@ -13,3 +13,16 @@ directory, check for filenames in the format "0405.jpg", and rename them
 to, for instance, "Comic Name v3 02-04-05.jpg".
 
 (*) Or maybe it's OS/X doing this, I don't know.
+
+Dependencies
+------------
+This project uses [rarfile](https://github.com/markokr/rarfile/) to
+parse CBR files. It needs a `rar` executable somewhere on the PATH
+in order to re-create CBR files (but it should eventually be able to
+convert from CBR to CBZ files). If you need a rar, try the [official
+version from rarlabs](http://www.rarlab.com/download.htm).
+
+Portability
+-----------
+I've only tested this on OS/X. No reason it shouldn't work on Linux,
+or even Windows, but some tweaking might be necessary.
