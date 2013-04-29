@@ -1,34 +1,69 @@
 #! /usr/bin/env python
 
-import logging, rarfile, re, os
+import logging, rarfile, zipfile, re, os, sys
 
 ROOT = '/tmp/x'
+#ROOT = '/Users/mysterio/Documents/Comics/Marvel/Daredevil Vol 2'
+
 COMIC_CBR_EXT = frozenset(['.cbr', '.rar'])
 COMIC_CBZ_EXT = frozenset(['.cbz', '.zip'])
 COMIC_EXT = COMIC_CBR_EXT | COMIC_CBZ_EXT
 
-BAD_FN = re.compile(r'^(.*)(\d{2})(\d{2})\.([A-Za-z0-9]+)$')
+FINAL_NUMBER = re.compile(r'\D(\d+)\.[A-Za-z0-9]+$')
+FOUR_NUM_END = re.compile(r'^(.*)(\d\d)(\d\d)\.([A-Za-z0-9]+)$')
 
-def fix_filename(filename):
+def fixed_filename(filename):
     """Given a possibly bad filename, return a fixed version of it, or None
     if the filename is already correct"""
-    res = BAD_FN.match(filename)
-    if res is None: return None
+    res = FOUR_NUM_END.match(filename)
+    if res is None:
+        return None
     return res.expand(r'\1\2-\3.\4')
 
 class Comic(object):
     def __init__(self, filename):
         self.filename = filename
         self.basename = os.path.basename(filename)
-        self.bad_names = [fx for fx
-                          in (fix_filename(f) for f in self.list_all_files())
-                          if fx]
+        self.bad_names = {}
+        self.scan()
+
+    def scan(self):
+        max_num = 0
+        min_num = sys.maxint
+        bad_names = {}
+        for fn in self.list_all_files():
+            last_num = FINAL_NUMBER.search(fn)
+            if last_num is None:
+                #logging.debug('Skipping %s', fn)
+                continue
+            num_len = len(last_num.group(1))
+            max_num = max(max_num, num_len)
+            min_num = min(min_num, num_len)
+            four_match = FOUR_NUM_END.match(fn)
+            if four_match:
+                bad_names[fn] = four_match.expand(r'\1\2-\3.\4')
+        if max_num != 4 or min_num != 2:
+            logging.debug('Skipping fix for %s (max %d, min %d)', self, max_num, min_num)
+            return
+        #logging.debug('hmm, %s: max %d, min %d, n %d', self, max_num, min_num, len(bad_names))
+        self.bad_names = bad_names
+        self.has_bad_names = True
 
     def list_all_files(self):
         raise NotImplementedError('Subclasses must define list_all_files')
 
+    def fix_filenames(self):
+        if not self.bad_names:
+            logging.debug('No incorrect files found in %s', self)
+            return
+        logging.info('Fixing %d filenames in %s', len(self.bad_names), self)
+        for old, new in self.bad_names.iteritems():
+            pass
+            #logging.debug('Renaming %s to %s', old, new)
+
     def __repr__(self):
-        return '<{.basename}>'.format(self)
+        sz = ' ({})'.format(len(self.bad_names)) if self.bad_names else ''
+        return '<"{0.basename}"{1}>'.format(self, sz)
 
     @staticmethod
     def makeComic(root, filename):
@@ -50,27 +85,28 @@ class CbrComic(Comic):
 
 class CbzComic(Comic):
     def __init__(self, filename):
-        super(CbrComic, self).__init__(filename)
+        super(CbzComic, self).__init__(filename)
+
+    def list_all_files(self):
+        with zipfile.ZipFile(self.filename) as zf:
+            return zf.namelist()
 
 def ext(filename):
     return os.path.splitext(filename)[1].lower()
 
-def looks_comic(filename):
+def looks_comicy(filename):
     return ext(filename) in COMIC_EXT
 
 def scan_comics(root):
     comix = []
     for root, dirs, files in os.walk(ROOT):
-        comix += [Comic.makeComic(root, f) for f in files if looks_comic(f)]
+        comix += [Comic.makeComic(root, f) for f in files if looks_comicy(f)]
     return comix
 
 def main():
     # TODO: argparse, etc
-    logging.basicConfig(level=logging.DEBUG, format='%(message)s')
+    logging.basicConfig(level=logging.INFO, format='%(message)s')
     for comic in scan_comics(ROOT):
-        if comic.bad_names:
-            logging.info('Fixing filenames in {}'.format(comic))
-        else:
-            logging.debug('Skipping {}'.format(comic))
+        comic.fix_filenames()
 
 if __name__ == '__main__': main()
