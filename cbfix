@@ -20,6 +20,8 @@ def fixed_filename(filename):
         return None
     return res.expand(r'\1\2-\3.\4')
 
+class FixerError(Exception): pass
+
 class Comic(object):
     def __init__(self, filename):
         self.filename = filename
@@ -32,7 +34,7 @@ class Comic(object):
         min_num = sys.maxint
         bad_names = {}
         for comp_file in self.list_compressed_files():
-            comp_file = comp_file.replace('\\', '/')
+            #comp_file = comp_file.replace('\\', '/')
             last_num = FINAL_NUMBER.search(comp_file)
             if last_num is None:
                 logging.debug('Scanner: skipping %s', comp_file)
@@ -161,18 +163,25 @@ class Fixer(object):
                 self.fix_comic(comic)
 
     def fix_comic(self, comic):
+        """Fix a single comic boox file"""
+        # Extract file
         try:
-            root = comic.extract_to(self.getTemp())
+            cb_path = comic.extract_to(self.getTemp())
         except OSError as e:
-            logging.error('Error extracting %s to %s: %s',
-                          comic, self.getTemp(), e)
+            raise FixerError('Error extracting {} to {}: {}'.format(
+                             comic, self.getTemp(), e), e)
+        # Rename bad files
         for old, new in comic.bad_names.iteritems():
-            old_path, new_path = os.path.join(root, old), os.path.join(root, new)
+            old_path, new_path = os.path.join(cb_path, old), os.path.join(cb_path, new)
             logging.debug('Renaming %s to %s', old, new)
             try:
                 os.rename(old_path, new_path)
             except OSError as e:
                 logging.error('Error renaming %s to %s: %s', old_path, new_path, e)
+                return
+        # Re-compress file
+        new_path = comic.compress_from(cb_path, self.getTemp())
+        logging.info('Fixed comic recompressed as %s', new_path)
 
 def ext(filename):
     return os.path.splitext(filename)[1].lower()
