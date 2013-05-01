@@ -28,3 +28,10 @@ Portability
 -----------
 I've only tested this on OS/X. No reason it shouldn't work on Linux,
 or even Windows, but some tweaking might be necessary.
+
+TODO
+----
+Everything works currently except for the re-compression bit. This should
+look for a command-line `rar` on the user's `PATH` and invoke it if present.
+For zip (CBZ) files we should just be able to use ZipFile.  Optionally we
+could convert from CBR to CBZ but I would prefer not to if possible.
