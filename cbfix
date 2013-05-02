@@ -1,9 +1,7 @@
 #! /usr/bin/env python
 
-import logging, rarfile, zipfile, re, os, sys, tempfile, shutil, argparse
-
-#ROOT = '/tmp/x'
-#ROOT = '/Users/mysterio/Documents/Comics/Marvel/Daredevil Vol 2'
+import logging, zipfile, re, os, sys, tempfile, shutil, argparse, subprocess
+import rarfile
 
 COMIC_CBR_EXT = frozenset(['.cbr', '.rar'])
 COMIC_CBZ_EXT = frozenset(['.cbz', '.zip'])
@@ -56,15 +54,6 @@ class Comic(object):
         self.bad_names = bad_names
         self.has_bad_names = True
 
-    def fix_filenames(self, fixer):
-        if not self.bad_names:
-            logging.debug('No incorrect files found in %s', self)
-            return
-        logging.info('Fixing %d filenames in %s', len(self.bad_names), self)
-        for old, new in self.bad_names.iteritems():
-            pass
-            #logging.debug('Renaming %s to %s', old, new)
-
     def __repr__(self):
         sz = ' ({})'.format(len(self.bad_names)) if self.bad_names else ''
         return '<"{0.basename}"{1}>'.format(self, sz)
@@ -90,7 +79,7 @@ class Comic(object):
         return new_archive_path
 
     def make_archive(self, extracted, archive_path):
-        raise NotImplementedError('Subclasses must define make_archive()')
+        shutil.make_archive(archive_path, self.ARCHIVE_FORMAT, root_dir=extracted)
 
     def open_archive(self, filename):
         raise NotImplementedError('Subclasses must define open_archive()')
@@ -113,35 +102,36 @@ class Comic(object):
 
 class RarComic(Comic):
     """Subclass representing a rar-compressed (CBR) file"""
+    ARCHIVE_FORMAT = 'rar'
+    EXTENSION = 'cbr'
+
     def __init__(self, filename):
         super(RarComic, self).__init__(filename)
 
-    def extension(self): return '.cbr'
-
-    def open_archive(self, filename): return rarfile.RarFile(filename)
-
-    def make_archive(self, extracted, archive_path):
-        raise FixerError('Error creating archive {} from {}: {}'.format(
-                         archive_path, extracted, 'not implemented'))
+    def open_archive(self, filename):
+        return rarfile.RarFile(filename)
 
 class ZipComic(Comic):
     """Subclass representing a zip-compressed (CBZ) file"""
+    ARCHIVE_FORMAT = 'zip'
+    EXTENSION = 'cbz'
+
     def __init__(self, filename):
         super(ZipComic, self).__init__(filename)
 
-    def extension(self): return '.cbz'
-
-    def open_archive(self, filename): return zipfile.ZipFile(filename)
+    def open_archive(self, filename):
+        return zipfile.ZipFile(filename)
 
 class Fixer(object):
     """Command class """
-    def __init__(self, detect_only=False, keep_temp=False):
+    def __init__(self, detect_only=False, keep_temp=False, backup_dir=None):
         self.root = None
         self.queue = []
         self.total_comics = 0
         self.total_renames = 0
         self.detect_only = detect_only
         self.keep_temp = keep_temp
+        self.backup_dir = backup_dir
 
     def scan_comics(self, root):
         comix = []
@@ -157,7 +147,7 @@ class Fixer(object):
             logging.debug('Removing %s', self.root)
             shutil.rmtree(self.root)
 
-    def getTemp(self):
+    def mk_temp(self):
         if self.root is None:
             self.root = tempfile.mkdtemp(prefix='cbfix-')
         return self.root
@@ -178,10 +168,10 @@ class Fixer(object):
                          self.total_comics)
             return
 
-        msg = '{} {} incorrect filenames in {} files.'.format(
-            ('Detected' if self.detect_only else 'About to fix'),
-            self.total_renames, self.total_comics)
-        logging.info(msg)
+        logging.info('%s %d incorrect filenames in %d files.',
+                     ('Detected' if self.detect_only else 'About to fix'),
+                     self.total_renames, self.total_comics)
+
         for comic in self.queue:
             logging.info('Found %d incorrect files in %s',
                          len(comic.bad_names), comic)
@@ -193,12 +183,12 @@ class Fixer(object):
 
     def fix_comic(self, comic):
         """Fix a single comic boox file"""
+        tmp = self.mk_temp()
         # Extract file
         try:
-            cb_path = comic.extract_to(self.getTemp())
+            cb_path = comic.extract_to(tmp)
         except OSError as e:
-            raise FixerError('Error extracting {} to {}: {}'.format(
-                             comic, self.getTemp(), e), e)
+            raise FixerError('Error extracting {} to {}: {}'.format(comic, tmp, e), e)
         # Rename bad files
         for old, new in comic.bad_names.iteritems():
             old_path, new_path = os.path.join(cb_path, old), os.path.join(cb_path, new)
@@ -208,13 +198,65 @@ class Fixer(object):
             except OSError as e:
                 raise FixerError('Error renaming {} to {}: {}'.format(
                                  old_path, new_path, e), e)
-        # Re-compress file
-        new_path = comic.compress_from(cb_path, self.getTemp())
-        logging.info('Fixed comic recompressed as %s', new_path)
+
+        new_path = self.compress(comic, cb_path)
+        backup = self.backup_old_comic(comic, new_path)
+        # should catch error here and rollback  move to backup folder
+        self.replace_old_comic(comic, new_path)
+        logging.info('Fixed %s (backup at %s)', comic.basename, backup)
+
+    def compress(self, comic, cb_path):
+        tmp = self.mk_temp()
+        try:
+            new_path = comic.compress_from(cb_path, tmp)
+            logging.info('Fixed comic recompressed as %s', new_path)
+        except OSError as e:
+            raise FixerError('Error compressing {} in {}: {}'.format(
+                             cb_path, tmp, e), e)
+        return new_path
+
+    def backup_old_comic(self, comic, new_path):
+        self.mk_backup_dir()
+        backup_path = os.path.join(self.backup_dir, comic.basename)
+        logging.debug('Backing up %s to %s', comic, backup_path)
+        try:
+            shutil.move(comic.filename, backup_path)
+        except OSError as e:
+            raise FixerError('Error moving backup {}: {}'.format(backup_path, e), e)
+        return backup_path
+
+    def mk_backup_dir(self):
+        if not os.path.isdir(self.backup_dir):
+            try:
+                os.makedirs(self.backup_dir)
+            except OSError as e:
+                raise FixerError('Error creating backup directory {}: {}'.format(
+                                 self.backup_dir, e), e)
+
+    def replace_old_comic(self, comic, new_path):
+        logging.info('Replacing %s with %s', comic, new_path)
+        shutil.move(new_path, comic.filename)
 
 def looks_comicy(filename):
     """Simple filter returns True if a filename has a comic extension"""
     return os.path.splitext(filename)[1].lower() in COMIC_EXT
+
+def rar_archiver(archive, base_directory, quiet=True, **kwargs):
+    logging.debug('creating rar_archive at %s from %s', archive, base_directory)
+    popen_args = {}
+    args = ['rar', '-r', 'a', archive, base_directory]
+    if (quiet):
+        devnull = open(os.devnull, 'wb')
+        popen_args['stdin'] = devnull
+        popen_args['stdout'] = devnull
+        popen_args['stderr'] = devnull
+    try:
+        subprocess.call(args, **popen_args)
+    except OSError as e:
+        raise FixerError('Error calling {}: {}'.format(args, e), e)
+    finally:
+        if (quiet): devnull.close()
+
 
 def main():
     parser = argparse.ArgumentParser(description='Fix cbr/cbz page numbering')
@@ -225,12 +267,18 @@ def main():
                         help='Detect bad filenames, but do not fix anything')
     parser.add_argument('-k', '--keep', action='store_true',
                         help='Keep temporary files around after run')
+    parser.add_argument('--backup', default='./cbfix-backups',
+                        help='Directory to back up old files to')
     opts = parser.parse_args()
+
+    shutil.register_archive_format('rar', rar_archiver, [('quiet', not opts.verbose)],
+                                   'RAR Archiver')
 
     level = logging.DEBUG if opts.verbose else logging.INFO
     logging.basicConfig(level=level, format='%(message)s')
 
-    fixer = Fixer(detect_only=opts.detect, keep_temp=opts.keep)
+    fixer = Fixer(detect_only=opts.detect, keep_temp=opts.keep,
+                  backup_dir=opts.backup)
     try:
         for comic in fixer.scan_comics(opts.root):
             fixer.include(comic)
